@@ -1,0 +1,211 @@
+name: "DevSecOps Security Pipeline"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write  # For uploading SARIF results
+
+jobs:
+  # ======================================================
+  # JOB 1: Unit Tests
+  # ======================================================
+  test:
+    name: "Unit Tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  # ======================================================
+  # JOB 2: SAST — Static Application Security Testing
+  # ======================================================
+  sast:
+    name: "SAST (Bandit)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: pip install bandit[sarif]
+
+      - name: Run Bandit SAST scan
+        run: |
+          echo "=== Running Bandit SAST Scan ==="
+          bandit -r src/ -f json -o bandit-report.json --severity-level medium || true
+          bandit -r src/ -f sarif -o bandit-report.sarif --severity-level medium || true
+          echo ""
+          echo "=== Human-Readable Summary ==="
+          bandit -r src/ --severity-level medium || true
+
+      - name: Upload Bandit SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: bandit-report.sarif
+          category: bandit-sast
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+  # ======================================================
+  # JOB 3: Dependency Scanning
+  # ======================================================
+  dependency-scan:
+    name: "Dependency Scan (pip-audit)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pip-audit
+        run: |
+          pip install pip-audit
+          echo "=== Dependency Vulnerability Scan ==="
+          pip-audit -r requirements.txt --format json --output pip-audit-report.json || true
+          echo ""
+          echo "=== Human-Readable Summary ==="
+          pip-audit -r requirements.txt || true
+
+      - name: Upload pip-audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit-report.json
+
+  # ======================================================
+  # JOB 4: Container Security Scanning
+  # ======================================================
+  container-scan:
+    name: "Container Scan (Trivy)"
+    runs-on: ubuntu-latest
+    needs: test  # Only scan if tests pass
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t secureflask:${{ github.sha }} .
+
+      - name: Run Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "secureflask:${{ github.sha }}"
+          format: "table"
+          exit-code: "0"
+          severity: "CRITICAL,HIGH,MEDIUM"
+
+      - name: Run Trivy (SARIF output for GitHub Security tab)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "secureflask:${{ github.sha }}"
+          format: "sarif"
+          output: "trivy-report.sarif"
+          severity: "CRITICAL,HIGH,MEDIUM"
+
+      - name: Upload Trivy SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-report.sarif
+          category: trivy-container
+
+  # ======================================================
+  # JOB 5: Infrastructure-as-Code Scanning
+  # ======================================================
+  iac-scan:
+    name: "IaC Scan (Checkov)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov IaC scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,checkov-report.sarif
+          soft_fail: true  # Don't block pipeline (learning mode)
+          quiet: true
+
+      - name: Upload Checkov SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-report.sarif
+          category: checkov-iac
+
+  # ======================================================
+  # JOB 6: Security Summary Gate
+  # ======================================================
+  security-gate:
+    name: "Security Summary"
+    runs-on: ubuntu-latest
+    needs: [test, sast, dependency-scan, container-scan, iac-scan]
+    if: always()
+
+    steps:
+      - name: Security pipeline summary
+        run: |
+          echo "============================================"
+          echo "   DevSecOps Security Pipeline Summary"
+          echo "============================================"
+          echo ""
+          echo "Unit Tests:        ${{ needs.test.result }}"
+          echo "SAST (Bandit):     ${{ needs.sast.result }}"
+          echo "Dependency Scan:   ${{ needs.dependency-scan.result }}"
+          echo "Container Scan:    ${{ needs.container-scan.result }}"
+          echo "IaC Scan:          ${{ needs.iac-scan.result }}"
+          echo ""
+          echo "============================================"
+          echo "Review findings in the Security tab of your repo"
+          echo "============================================"
+          
