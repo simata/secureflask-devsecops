@@ -74,17 +74,20 @@ def get_vulnerability(cve_id):
 
 @app.route("/api/v1/lookup", methods=["POST"])
 def dns_lookup():
-    """
-    INSECURE: Uses subprocess with shell=True.
-    Bandit will flag this as B602 (subprocess_popen_with_shell_equals_true).
-    """
+    """SECURE: Uses socket library instead of shell commands."""
+    import socket
     data = request.get_json()
     hostname = data.get("hostname", "")
-    # INSECURE — shell=True with user input is command injection risk
-    result = subprocess.run(
-        f"nslookup {hostname}", shell=True, capture_output=True, text=True
-    )
-    return jsonify({"output": result.stdout})
+
+    # Input validation
+    if not hostname or not isinstance(hostname, str) or len(hostname) > 253:
+        return jsonify({"error": "Invalid hostname"}), 400
+
+    try:
+        result = socket.gethostbyname(hostname)
+        return jsonify({"hostname": hostname, "ip": result})
+    except socket.gaierror:
+        return jsonify({"error": "DNS lookup failed"}), 404
 
 
 @app.route("/api/v1/debug", methods=["GET"])

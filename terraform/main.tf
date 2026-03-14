@@ -119,18 +119,21 @@ resource "azurerm_container_app" "api" {
 # --- INTENTIONALLY INSECURE RESOURCES (for Checkov to flag) ---
 
 # INSECURE: Storage account without encryption and with public access
-resource "azurerm_storage_account" "insecure_example" {
-  name                     = "${var.project_name}${var.environment}st"
-  resource_group_name      = azurerm_resource_group.main.name
-  location                 = azurerm_resource_group.main.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-  min_tls_version          = "TLS1_0" # INSECURE — Checkov flags this
+resource "azurerm_storage_account" "secure_example" {
+  name                            = "${var.project_name}${var.environment}st"
+  resource_group_name             = azurerm_resource_group.main.name
+  location                        = azurerm_resource_group.main.location
+  account_tier                    = "Standard"
+  account_replication_type        = "LRS"
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+  https_traffic_only_enabled      = true
 
-  # INSECURE — missing:
-  #   - allow_nested_items_to_be_public = false
-  #   - network_rules with default_action = "Deny"
-  #   - enable_https_traffic_only should be true (default in newer versions)
+  network_rules {
+    default_action = "Deny"
+    bypass         = ["AzureServices"]
+  }
 
   tags = azurerm_resource_group.main.tags
+}azurerm_resource_group.main.tags
 }
